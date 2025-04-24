@@ -122,7 +122,8 @@ class CardViewPlugin extends Plugin {
             replaceFileExplorer: true, // New setting to replace the file explorer
             showBreadcrumbs: false,    // Show navigation breadcrumbs
             showFolders: false,        // Show folders as special items
-            showAllFilesAtRoot: true   // Show all files at root level, not just root files
+            showAllFilesAtRoot: true,  // Show all files at root level, not just root files
+            searchContents: true       // New setting to enable content search
         }, await this.loadData());
     }
 
@@ -213,6 +214,19 @@ class CardViewSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.showAllFilesAtRoot)
                 .onChange(async (value) => {
                     this.plugin.settings.showAllFilesAtRoot = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        // Search Settings
+        containerEl.createEl('h3', { text: 'Search Settings' });
+
+        new Setting(containerEl)
+            .setName('Search Note Contents')
+            .setDesc('Search note contents in addition to filenames')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.searchContents)
+                .onChange(async (value) => {
+                    this.plugin.settings.searchContents = value;
                     await this.plugin.saveSettings();
                 }));
 
@@ -337,6 +351,8 @@ class CardView extends ItemView {
         this.plugin = plugin;
         this.currentFolder = '';
         this.searchTerm = '';
+        this.searchResults = null; // Will hold search results when searching
+        this.isSearching = false;  // Flag to track when in search mode
     }
 
     getViewType() {
@@ -367,16 +383,40 @@ class CardView extends ItemView {
         // Create control bar
         const controlsEl = headerEl.createEl('div', { cls: 'card-view-controls' });
         
-        // Add search box
-        this.searchEl = controlsEl.createEl('input', { 
+        // Create search form
+        const searchFormEl = controlsEl.createEl('form', { cls: 'card-view-search-form' });
+        
+        // Add search box with form submission
+        this.searchEl = searchFormEl.createEl('input', { 
             cls: 'card-view-search',
             type: 'text',
             placeholder: 'Search...'
         });
         
-        this.searchEl.addEventListener('input', () => {
+        // Handle search form submission instead of input event
+        searchFormEl.addEventListener('submit', (e) => {
+            e.preventDefault();
             this.searchTerm = this.searchEl.value;
-            this.renderContent();
+            
+            if (this.searchTerm) {
+                this.performSearch();
+            } else {
+                // If search is cleared, go back to normal view
+                this.isSearching = false;
+                this.searchResults = null;
+                this.renderContent();
+            }
+        });
+        
+        // Also handle input event for when search is cleared
+        this.searchEl.addEventListener('input', (e) => {
+            // If search box is cleared, automatically reset view
+            if (!e.target.value || e.target.value.trim() === '') {
+                this.searchTerm = '';
+                this.isSearching = false;
+                this.searchResults = null;
+                this.renderContent();
+            }
         });
 
         // Add new note button
@@ -397,7 +437,7 @@ class CardView extends ItemView {
     }
 
     updateBreadcrumbs() {
-        if (!this.breadcrumbsEl) return;
+        if (!this.breadcrumbsEl || this.isSearching) return;
         
         this.breadcrumbsEl.empty();
         
@@ -452,7 +492,72 @@ class CardView extends ItemView {
         });
     }
 
+    // Method to perform search using Obsidian's search functionality
+    async performSearch() {
+        // Skip empty searches
+        if (!this.searchTerm || this.searchTerm.trim() === '') {
+            this.isSearching = false;
+            this.searchResults = null;
+            this.renderContent();
+            return;
+        }
+        
+        // Set searching flag
+        this.isSearching = true;
+        
+        try {
+            // Get all markdown files to search
+            const allFiles = this.app.vault.getMarkdownFiles();
+            const searchResults = [];
+            const query = this.searchTerm.toLowerCase();
+            
+            // For each file, check if it matches our search criteria
+            for (const file of allFiles) {
+                // Always search filename
+                const filenameMatch = file.basename.toLowerCase().includes(query);
+                
+                // If filename matches or we need to search contents
+                if (filenameMatch) {
+                    searchResults.push(file);
+                } else if (this.plugin.settings.searchContents) {
+                    try {
+                        // Read file content and search in it
+                        const content = await this.app.vault.cachedRead(file);
+                        if (content.toLowerCase().includes(query)) {
+                            searchResults.push(file);
+                        }
+                    } catch (e) {
+                        console.warn(`Card View: Could not read file ${file.path} for search`, e);
+                    }
+                }
+            }
+            
+            console.log(`Card View: Search found ${searchResults.length} results for "${query}"`);
+            this.searchResults = searchResults;
+            
+            // Render the search results
+            this.renderContent();
+        } catch (error) {
+            console.error('Card View: Error during search', error);
+            
+            // Fallback to simple filename search
+            this.searchResults = this.app.vault.getMarkdownFiles().filter(file => 
+                file.basename.toLowerCase().includes(this.searchTerm.toLowerCase())
+            );
+            
+            this.renderContent();
+        }
+    }
+
     async navigateToFolder(folderPath) {
+        // Clear any search when navigating
+        this.isSearching = false;
+        this.searchResults = null;
+        this.searchTerm = '';
+        if (this.searchEl) {
+            this.searchEl.value = '';
+        }
+        
         this.currentFolder = folderPath;
         this.updateBreadcrumbs();
         this.renderContent();
@@ -473,6 +578,14 @@ class CardView extends ItemView {
         this.cardsContainerEl.style.setProperty('--card-height', settings.cardHeight + 'px');
         this.cardsContainerEl.style.setProperty('--card-spacing', settings.cardSpacing + 'px');
         
+        // If searching, show search results
+        if (this.isSearching && this.searchResults) {
+            await this.renderSearchResults();
+            return;
+        }
+        
+        // Otherwise show normal folder content
+        
         // Render folders first if enabled (and not at root level)
         if (settings.showFolders && this.currentFolder !== '') {
             await this.renderFolders();
@@ -484,6 +597,30 @@ class CardView extends ItemView {
         // Debug info to help diagnose issues
         const fileCount = await this.countFiles();
         console.log(`Card View: Found ${fileCount} files in vault, rendering from folder: "${this.currentFolder}"`);
+    }
+    
+    async renderSearchResults() {
+        if (!this.searchResults || this.searchResults.length === 0) {
+            this.cardsContainerEl.createEl('div', {
+                cls: 'card-view-no-results',
+                text: 'No results found for "' + this.searchTerm + '"'
+            });
+            return;
+        }
+        
+        // Show search count
+        this.cardsContainerEl.createEl('div', {
+            cls: 'card-view-search-count',
+            text: `Found ${this.searchResults.length} results for "${this.searchTerm}"`
+        });
+        
+        // Sort the search results before rendering
+        const sortedResults = await this.sortFiles(this.searchResults);
+        
+        // Render all search result files as cards
+        for (const file of sortedResults) {
+            await this.renderFileCard(file);
+        }
     }
     
     async countFiles() {
@@ -506,16 +643,8 @@ class CardView extends ItemView {
             }
         });
         
-        // Filter by search term if provided
-        const filteredFolders = this.searchTerm 
-            ? folders.filter(folder => {
-                const folderName = folder.split('/').pop();
-                return folderName.toLowerCase().includes(this.searchTerm.toLowerCase());
-            })
-            : folders;
-        
         // Render folder cards
-        for (const folder of filteredFolders) {
+        for (const folder of folders) {
             const folderName = folder.split('/').pop();
             
             // Create folder card
@@ -583,79 +712,106 @@ class CardView extends ItemView {
             });
         }
         
-        // Filter by search term if provided
-        const filteredFiles = this.searchTerm 
-            ? files.filter(file => file.basename.toLowerCase().includes(this.searchTerm.toLowerCase()))
-            : files;
-        
         // Sort files based on settings
-        const sortedFiles = await this.sortFiles(filteredFiles);
+        const sortedFiles = await this.sortFiles(files);
         
         console.log(`Card View: Rendering ${sortedFiles.length} files`);
         
         // Create cards for each file
         for (const file of sortedFiles) {
-            // Create card element
-            const cardEl = this.cardsContainerEl.createEl('div', { cls: 'card-view-card' });
+            await this.renderFileCard(file);
+        }
+    }
+    
+    async renderFileCard(file) {
+        const { vault } = this.app;
+        const { settings } = this.plugin;
+        
+        // Create card element
+        const cardEl = this.cardsContainerEl.createEl('div', { cls: 'card-view-card' });
+        
+        // Add title
+        cardEl.createEl('div', { 
+            cls: 'card-view-title',
+            text: file.basename
+        });
+        
+        // // Add path info if we're in search results or showing all files at root
+        // if ((this.isSearching || (this.currentFolder === '' && settings.showAllFilesAtRoot)) && 
+        //     file.parent && file.parent.path && file.parent.path.trim() !== '') {
+        //     cardEl.createEl('div', { 
+        //         cls: 'card-view-path',
+        //         text: file.parent.path
+        //     });
+        // }
+        
+        // Add preview if enabled
+        if (settings.showPreview) {
+            const previewEl = cardEl.createEl('div', { cls: 'card-view-preview' });
             
-            // Add title
-            cardEl.createEl('div', { 
-                cls: 'card-view-title',
-                text: file.basename
-            });
-            
-            // // Add path/location if not in the root folder view
-            // if (this.currentFolder === '' && file.parent && file.parent.path && file.parent.path.trim() !== '') {
-            //     cardEl.createEl('div', { 
-            //         cls: 'card-view-path',
-            //         text: file.parent.path
-            //     });
-            // }
-            
-            // Add preview if enabled
-            if (settings.showPreview) {
-                const previewEl = cardEl.createEl('div', { cls: 'card-view-preview' });
+            try {
+                // Get file content
+                const content = await vault.cachedRead(file);
                 
-                try {
-                    // Get file content
-                    const content = await vault.cachedRead(file);
+                // Clean content (remove markdown, etc)
+                const cleanContent = this.cleanContent(content);
+                
+                // Truncate to preview length
+                const preview = cleanContent.length > settings.previewLength
+                    ? cleanContent.substring(0, settings.previewLength) + '...'
+                    : cleanContent;
                     
-                    // Clean content (remove markdown, etc)
-                    const cleanContent = this.cleanContent(content);
+                previewEl.setText(preview);
+                
+                // If we're searching and have content match, highlight the search term
+                if (this.isSearching && this.searchTerm && settings.searchContents) {
+                    const searchIndex = cleanContent.toLowerCase().indexOf(this.searchTerm.toLowerCase());
                     
-                    // Truncate to preview length
-                    const preview = cleanContent.length > settings.previewLength
-                        ? cleanContent.substring(0, settings.previewLength) + '...'
-                        : cleanContent;
+                    if (searchIndex >= 0) {
+                        // Context for the match (some characters before and after)
+                        const contextStart = Math.max(0, searchIndex - 30);
+                        const contextEnd = Math.min(cleanContent.length, searchIndex + this.searchTerm.length + 30);
                         
-                    previewEl.setText(preview);
-                } catch (error) {
-                    previewEl.setText('Error loading preview');
+                        // Get context around the match
+                        let context = cleanContent.substring(contextStart, contextEnd);
+                        
+                        // Add ellipsis if needed
+                        if (contextStart > 0) context = '...' + context;
+                        if (contextEnd < cleanContent.length) context += '...';
+                        
+                        // Use the context as the preview
+                        previewEl.setText(context);
+                        
+                        // Add highlight class for CSS styling
+                        previewEl.addClass('card-view-preview-highlight');
+                    }
                 }
+            } catch (error) {
+                previewEl.setText('Error loading preview');
             }
+        }
+        
+        // Add date if enabled
+        if (settings.showDate) {
+            const stat = await vault.adapter.stat(file.path);
+            const date = settings.sortBy === 'ctime' 
+                ? stat.ctime 
+                : stat.mtime;
             
-            // Add date if enabled
-            if (settings.showDate) {
-                const stat = await vault.adapter.stat(file.path);
-                const date = settings.sortBy === 'ctime' 
-                    ? stat.ctime 
-                    : stat.mtime;
-                
-                cardEl.createEl('div', { 
-                    cls: 'card-view-date',
-                    text: window.moment(date).format(settings.dateFormat)
-                });
-            }
-            
-            // Make card clickable to open note
-            cardEl.addEventListener('click', async (event) => {
-                // Only if the click is on the card itself, not a button inside it
-                if (event.target === cardEl || event.target.parentElement === cardEl) {
-                    const leaf = this.app.workspace.getLeaf('tab');
-                    await leaf.openFile(file);
-                }
+            cardEl.createEl('div', { 
+                cls: 'card-view-date',
+                text: window.moment(date).format(settings.dateFormat)
             });
         }
+        
+        // Make card clickable to open note
+        cardEl.addEventListener('click', async (event) => {
+            // Only if the click is on the card itself, not a button inside it
+            if (event.target === cardEl || event.target.parentElement === cardEl) {
+                const leaf = this.app.workspace.getLeaf('tab');
+                await leaf.openFile(file);
+            }
+        });
     }
 
     async sortFiles(files) {
