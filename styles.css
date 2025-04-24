@@ -53,6 +53,12 @@
     align-items: center;
 }
 
+/* Search form */
+.card-view-search-form {
+    display: flex;
+    flex: 1;
+}
+
 .card-view-search {
     flex: 1;
     height: 28px;
@@ -77,6 +83,30 @@
 
 .card-view-new-note:hover {
     background-color: var(--interactive-accent-hover);
+}
+
+/* Search results info */
+.card-view-search-count {
+    padding: 5px 10px;
+    margin-bottom: 10px;
+    background-color: var(--background-secondary);
+    border-radius: 4px;
+    font-size: 14px;
+    color: var(--text-normal);
+}
+
+.card-view-no-results {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* Preview highlighting for search results */
+.card-view-preview-highlight {
+    background-color: var(--background-primary-alt);
+    border-left: 2px solid var(--text-accent);
+    padding-left: 8px;
 }
 
 /* Container for all cards */
@@ -189,6 +219,7 @@
         flex-direction: column;
     }
     
+    .card-view-search-form,
     .card-view-search,
     .card-view-new-note {
         width: 100%;
