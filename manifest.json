@@ -1,0 +1,10 @@
+{
+    "id": "evernote-style-card-view",
+    "name": "Evernote-Style Card View",
+    "version": "1.0.0",
+    "minAppVersion": "0.15.0",
+    "description": "View your notes as cards with previews and dates, just like Evernote's card view. Can replace the default file explorer.",
+    "author": "Custom Plugin",
+    "authorUrl": "https://github.com/yourusername",
+    "isDesktopOnly": false
+}
